@@ -212,8 +212,8 @@ export async function sendEmailTask(emailLogId: string): Promise<boolean> {
 
 // Queue lead-related emails in the background (swallowing errors so lead creation isn't blocked)
 export function queueLeadSubmissionEmails(lead: Lead) {
-  // Use a promise to keep this non-blocking
-  Promise.resolve().then(async () => {
+  // Use setImmediate to process background emails asynchronously without blocking the response
+  setImmediate(async () => {
     try {
       const config = settingsDB.get();
       const settings = config.settings;
