@@ -145,8 +145,8 @@ export async function POST(request: NextRequest) {
       if (!emailResult.adminSent) {
         emailStatus = "failed";
       }
-    } catch (emailErr) {
-      console.error("[Email] Failed to deliver admin notification:", emailErr);
+    } catch (error: any) {
+      console.error("Lead saved but email failed", error?.message || error);
       emailStatus = "failed";
     }
 

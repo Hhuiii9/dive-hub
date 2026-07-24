@@ -35,13 +35,86 @@ export function compileTemplate(text: string, data: PlaceholderData): string {
   return compiled;
 }
 
+// Required environment variables for email sending
+export const REQUIRED_EMAIL_ENV_VARS = [
+  "EMAIL_HOST",
+  "EMAIL_PORT",
+  "EMAIL_HOST_USER",
+  "EMAIL_HOST_PASSWORD",
+  "EMAIL_USE_TLS",
+  "DEFAULT_FROM_EMAIL",
+  "ADMIN_NOTIFICATION_EMAIL",
+  "ADMIN_FRONTEND_URL",
+] as const;
+
+
+
+// Helper to check missing environment variables
+export function checkRequiredEnvVars(): { valid: boolean; missing: string[]; envStatus: Record<string, boolean> } {
+  const missing: string[] = [];
+  const envStatus: Record<string, boolean> = {
+    "EMAIL_HOST exists": Boolean(process.env.EMAIL_HOST),
+    "EMAIL_HOST_USER exists": Boolean(process.env.EMAIL_HOST_USER),
+    "EMAIL_HOST_PASSWORD exists": Boolean(process.env.EMAIL_HOST_PASSWORD),
+    "ADMIN_NOTIFICATION_EMAIL exists": Boolean(process.env.ADMIN_NOTIFICATION_EMAIL),
+  };
+
+  REQUIRED_EMAIL_ENV_VARS.forEach((varName) => {
+    if (!process.env[varName]) {
+      missing.push(varName);
+    }
+  });
+
+  return {
+    valid: missing.length === 0,
+    missing,
+    envStatus,
+  };
+}
+
+// Helper to safely log env variable presence without printing secrets
+export function logEnvExistenceOnly(): void {
+  console.log("EMAIL_HOST exists:", Boolean(process.env.EMAIL_HOST));
+  console.log("EMAIL_HOST_USER exists:", Boolean(process.env.EMAIL_HOST_USER));
+  console.log("EMAIL_HOST_PASSWORD exists:", Boolean(process.env.EMAIL_HOST_PASSWORD));
+  console.log("ADMIN_NOTIFICATION_EMAIL exists:", Boolean(process.env.ADMIN_NOTIFICATION_EMAIL));
+}
+
+// Helper to categorize SMTP errors cleanly without exposing secrets
+export function categorizeSmtpError(error: any): string {
+  if (!error) return "Unknown SMTP error occurred.";
+  const msg = typeof error === "string" ? error : error.message || String(error);
+  const code = error.code || "";
+  const responseCode = error.responseCode || 0;
+
+  if (msg.includes("Missing environment variable")) {
+    return msg;
+  }
+  if (code === "EAUTH" || responseCode === 535 || /invalid login|authentication|auth/i.test(msg)) {
+    return "Authentication failed";
+  }
+  if (code === "ETIMEDOUT" || code === "ESOCKET" || /timeout|timed out/i.test(msg)) {
+    return "Timeout";
+  }
+  if (code === "ECONNREFUSED" || code === "EHOSTUNREACH" || code === "ENOTFOUND" || /connection|connect ECONN/i.test(msg)) {
+    return "SMTP connection failed";
+  }
+  if ((responseCode >= 550 && responseCode <= 559) || /recipient|mailbox/i.test(msg)) {
+    return "Recipient rejected";
+  }
+  if (code.startsWith("E") || /network|dns|socket/i.test(msg)) {
+    return "Network error";
+  }
+  return "SMTP connection failed";
+}
+
 // Create nodemailer transporter
-function getTransporter() {
+export function getTransporter() {
   const host = process.env.EMAIL_HOST || "";
   const port = parseInt(process.env.EMAIL_PORT || "587", 10);
   const user = process.env.EMAIL_HOST_USER || "";
   const pass = process.env.EMAIL_HOST_PASSWORD || "";
-  const secure = process.env.EMAIL_USE_TLS === "true" ? (port === 465) : false;
+  const secure = port === 465;
 
   return nodemailer.createTransport({
     host,
@@ -75,7 +148,6 @@ function generateAdminLeadHtmlTable(lead: Lead): string {
   // Add custom form fields
   if (lead.form_data) {
     Object.entries(lead.form_data).forEach(([key, value]) => {
-      // Avoid duplicate keys
       const standardKeys = ["full_name", "email", "phone", "whatsapp_number", "company_name", "location", "service_interested", "message", "preferred_contact_method"];
       if (!standardKeys.includes(key)) {
         rows.push({ label: `Custom Field (${key})`, val: String(value) });
@@ -114,48 +186,6 @@ function generateAdminLeadHtmlTable(lead: Lead): string {
   `;
 }
 
-// Generate Admin Notification Plain Text
-function generateAdminLeadPlainText(lead: Lead, detailsUrl: string): string {
-  let text = `New Lead Received:\n\n`;
-  const rows = [
-    { label: "Lead ID", val: lead.id },
-    { label: "Full Name", val: lead.full_name },
-    { label: "Email", val: lead.email },
-    { label: "Phone Number", val: lead.phone },
-    { label: "WhatsApp Number", val: lead.whatsapp_number },
-    { label: "Company", val: lead.company_name },
-    { label: "Location", val: lead.location },
-    { label: "Interested Service", val: lead.service_interested },
-    { label: "Preferred Contact Method", val: lead.preferred_contact_method },
-    { label: "Source", val: lead.source },
-    { label: "Submitted Page URL", val: lead.page_url },
-    { label: "Submission Date", val: new Date(lead.created_at).toLocaleString() },
-    { label: "Message", val: lead.message },
-  ];
-
-  if (lead.form_data) {
-    Object.entries(lead.form_data).forEach(([key, value]) => {
-      const standardKeys = ["full_name", "email", "phone", "whatsapp_number", "company_name", "location", "service_interested", "message", "preferred_contact_method"];
-      if (!standardKeys.includes(key)) {
-        rows.push({ label: key, val: String(value) });
-      }
-    });
-  }
-
-  // Filter and build plain text
-  rows.forEach(row => {
-    if (row.val) {
-      const clean = String(row.val).trim();
-      if (clean !== "" && clean.toLowerCase() !== "n/a") {
-        text += `${row.label}: ${row.val}\n`;
-      }
-    }
-  });
-
-  text += `\nView details in Admin Dashboard: ${detailsUrl}\n`;
-  return text;
-}
-
 // Main helper to process and send a single email record
 export async function sendEmailTask(emailLogId: string): Promise<boolean> {
   const emailLog = emailsDB.getById(emailLogId);
@@ -167,12 +197,42 @@ export async function sendEmailTask(emailLogId: string): Promise<boolean> {
   // Update status to pending if not already
   emailsDB.update(emailLogId, { status: "pending" });
 
-  const backend = process.env.EMAIL_BACKEND || "console";
+  // Log env existence safely
+  logEnvExistenceOnly();
+
+  // Check required env vars
+  const envCheck = checkRequiredEnvVars();
+  if (!envCheck.valid) {
+    const errorMsg = `Missing environment variable: ${envCheck.missing.join(", ")}`;
+    console.error(`Failed to send email ${emailLogId}: ${errorMsg}`);
+    emailsDB.update(emailLogId, {
+      status: "failed",
+      error_message: errorMsg
+    });
+    return false;
+  }
+
+  // Default backend to smtp if process.env.EMAIL_HOST exists
+  const backend = process.env.EMAIL_BACKEND || (process.env.EMAIL_HOST ? "smtp" : "console");
   const defaultFrom = process.env.DEFAULT_FROM_EMAIL || "no-reply@divehubmarineservices.com";
 
   try {
     if (backend === "smtp") {
       const transporter = getTransporter();
+
+      // Verify connection before sending
+      try {
+        await transporter.verify();
+      } catch (verifyErr: any) {
+        const safeError = categorizeSmtpError(verifyErr);
+        console.error(`SMTP verification failed before sending email ${emailLogId}:`, safeError);
+        emailsDB.update(emailLogId, {
+          status: "failed",
+          error_message: safeError
+        });
+        return false;
+      }
+
       await transporter.sendMail({
         from: defaultFrom,
         to: emailLog.recipient,
@@ -201,10 +261,11 @@ export async function sendEmailTask(emailLogId: string): Promise<boolean> {
     });
     return true;
   } catch (error: any) {
-    console.error(`Failed to send email ${emailLogId}:`, error);
+    const safeError = categorizeSmtpError(error);
+    console.error(`Failed to send email ${emailLogId}:`, safeError);
     emailsDB.update(emailLogId, {
       status: "failed",
-      error_message: error.message || "Unknown SMTP error occurred."
+      error_message: safeError
     });
     return false;
   }
@@ -319,6 +380,9 @@ export async function sendLeadNotificationEmails(lead: Lead): Promise<{ adminSen
   return { adminSent, customerSent };
 }
 
+// Alias for requirement 10 compliance
+export const sendLeadNotification = sendLeadNotificationEmails;
+
 export function queueLeadSubmissionEmails(lead: Lead) {
   setImmediate(() => {
     sendLeadNotificationEmails(lead).catch((err) => {
@@ -326,4 +390,75 @@ export function queueLeadSubmissionEmails(lead: Lead) {
     });
   });
 }
+
+// Health check function to test SMTP verification and send test email
+export async function testEmailConnectionAndSend(): Promise<{
+  success: boolean;
+  message: string;
+  envStatus: Record<string, boolean>;
+  missingVars: string[];
+  smtpVerified: boolean;
+}> {
+  logEnvExistenceOnly();
+  const envCheck = checkRequiredEnvVars();
+
+  if (!envCheck.valid) {
+    const errorMsg = `Missing environment variable: ${envCheck.missing.join(", ")}`;
+    return {
+      success: false,
+      message: errorMsg,
+      envStatus: envCheck.envStatus,
+      missingVars: envCheck.missing,
+      smtpVerified: false,
+    };
+  }
+
+  const transporter = getTransporter();
+
+  // Step 1: Verify SMTP Connection
+  try {
+    await transporter.verify();
+  } catch (verifyErr: any) {
+    const safeError = categorizeSmtpError(verifyErr);
+    return {
+      success: false,
+      message: safeError,
+      envStatus: envCheck.envStatus,
+      missingVars: [],
+      smtpVerified: false,
+    };
+  }
+
+  // Step 2: Send Test Email
+  const recipient = process.env.ADMIN_NOTIFICATION_EMAIL || "";
+  const defaultFrom = process.env.DEFAULT_FROM_EMAIL || recipient;
+
+  try {
+    await transporter.sendMail({
+      from: defaultFrom,
+      to: recipient,
+      subject: "Dive Hub Marine - Email Health Check Test",
+      text: "This is a test email sent from the Dive Hub Marine email health-check endpoint to verify production SMTP configuration.",
+      html: "<p>This is a test email sent from the Dive Hub Marine email health-check endpoint to verify production SMTP configuration.</p>",
+    });
+
+    return {
+      success: true,
+      message: `Test email sent successfully to ${recipient}`,
+      envStatus: envCheck.envStatus,
+      missingVars: [],
+      smtpVerified: true,
+    };
+  } catch (sendErr: any) {
+    const safeError = categorizeSmtpError(sendErr);
+    return {
+      success: false,
+      message: safeError,
+      envStatus: envCheck.envStatus,
+      missingVars: [],
+      smtpVerified: true,
+    };
+  }
+}
+
 
