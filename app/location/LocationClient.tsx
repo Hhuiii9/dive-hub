@@ -77,7 +77,7 @@ export default function LocationClient() {
             variants={fadeInUp}
             className="mx-auto mt-5 max-w-3xl text-[14px] leading-7 text-white/72 font-light sm:mt-7 sm:text-[16px] sm:leading-8"
           >
-            Visit our training academy and marine service headquarters based in Angamaly, Ernakulam, Kerala, India. Find detailed coordinates, directions, maps, and hours of operation below.
+            Visit our training academy and marine service headquarters located near Angamaly Railway Station, Angamaly, Ernakulam, Kerala, India. Find detailed coordinates, directions, maps, and hours of operation below.
           </motion.p>
         </div>
       </section>
@@ -111,7 +111,8 @@ export default function LocationClient() {
                     <div>
                       <h4 className="text-sm font-bold text-white uppercase tracking-wider">Address</h4>
                       <p className="mt-1 text-sm text-slate-300 font-light leading-relaxed">
-                        Dive Hub & Marine Services<br />
+                        Dive Hub &amp; Marine Services<br />
+                        Near Angamaly Railway Station,<br />
                         Angamaly, Ernakulam District,<br />
                         Kerala, 683572, India
                       </p>
@@ -151,7 +152,7 @@ export default function LocationClient() {
               {/* Action Button */}
               <div className="mt-8 pt-6 border-t border-white/5 flex flex-col gap-4">
                 <a
-                  href="https://www.google.com/maps/place/Dive+Hub+%26+Marine+Services/@10.1926394,76.3869289,17z/data=!3m1!4b1!4m6!3m5!1s0x3b0807c7ec9c75e9:0xbc174757022bb9ee!8m2!3d10.1926394!4d76.3869289!16s%2Fg%2F11z9rfxttv?entry=ttu&g_ep=EgoyMDI2MDYwMy4xIKXMDSoASAFQAw%3D%3D"
+                  href={process.env.NEXT_PUBLIC_GOOGLE_MAPS_URL || "https://www.google.com/maps/place/Dive+Hub+%26+Marine+Services/@10.1926394,76.3869289,17z/data=!3m1!4b1!4m6!3m5!1s0x3b0807c7ec9c75e9:0xbc174757022bb9ee!8m2!3d10.1926394!4d76.3869289!16s%2Fg%2F11z9rfxttv?entry=ttu&g_ep=EgoyMDI2MDYwMy4xIKXMDSoASAFQAw%3D%3D"}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#67e8f9] hover:bg-cyan-300 px-6 py-3.5 text-xs font-black uppercase tracking-[0.18em] text-slate-950 transition-all duration-300 hover:scale-105"

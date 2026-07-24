@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { settingsDB, leadsDB, FormField } from "@/lib/db";
 import { queueLeadSubmissionEmails } from "@/lib/emailService";
+import { connectDatabase } from "@/lib/mongodb";
+import LeadModel from "@/lib/models/Lead";
 
 export async function POST(request: NextRequest) {
   try {
@@ -76,10 +78,42 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid submission data" }, { status: 400 });
     }
 
-    // 4. Create Lead in DB
+    // 4. Create Lead in JSON file DB (primary store — keeps admin dashboard working)
     const newLead = leadsDB.create(leadRecord);
 
-    // 5. Trigger background emails
+    // 5. Also save to MongoDB (non-blocking — failure does not affect the response)
+    Promise.resolve().then(async () => {
+      try {
+        await connectDatabase();
+        await LeadModel.create({
+          jsonId: newLead.id,
+          fullName: newLead.full_name,
+          email: newLead.email,
+          phone: newLead.phone,
+          whatsappNumber: newLead.whatsapp_number,
+          companyName: newLead.company_name,
+          location: newLead.location,
+          serviceInterested: newLead.service_interested,
+          message: newLead.message,
+          preferredContactMethod: newLead.preferred_contact_method,
+          formData: newLead.form_data,
+          status: newLead.status,
+          source: newLead.source,
+          pageUrl: newLead.page_url,
+          ipAddress: newLead.ip_address,
+          userAgent: newLead.user_agent,
+          adminNotes: "",
+          createdAt: new Date(newLead.created_at),
+          updatedAt: new Date(newLead.updated_at),
+        });
+        console.log(`[MongoDB] Lead saved: ${newLead.id}`);
+      } catch (mongoErr: any) {
+        // Log MongoDB errors without exposing them to the client
+        console.error(`[MongoDB] Failed to save lead ${newLead.id}:`, mongoErr.message);
+      }
+    });
+
+    // 6. Trigger background emails
     queueLeadSubmissionEmails(newLead);
 
     return NextResponse.json({

@@ -39,6 +39,9 @@ export const metadata: Metadata = {
     "Ocean Diving",
     "Scuba Training India",
     "Dive Academy Kerala",
+    "Angamaly Railway Station",
+    "Near Angamaly Railway Station",
+    "Dive Hub Angamaly",
   ],
 
   authors: [
@@ -110,7 +113,7 @@ const jsonLd = {
   "priceRange": "$$",
   "address": {
     "@type": "PostalAddress",
-    "streetAddress": "Angamaly",
+    "streetAddress": "Near Angamaly Railway Station, Angamaly",
     "addressLocality": "Ernakulam",
     "addressRegion": "Kerala",
     "postalCode": "683572",
