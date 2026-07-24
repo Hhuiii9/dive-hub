@@ -78,40 +78,65 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid submission data" }, { status: 400 });
     }
 
-    // 4. Create Lead in JSON file DB (primary store — keeps admin dashboard working)
-    const newLead = leadsDB.create(leadRecord);
+    // 4. Save lead directly to MongoDB database
+    let createdMongoLead: any = null;
+    try {
+      await connectDatabase();
+      const generatedId = "lead_" + Math.random().toString(36).substr(2, 9);
+      const now = new Date();
+      
+      createdMongoLead = await LeadModel.create({
+        jsonId: generatedId,
+        fullName: leadRecord.full_name,
+        email: leadRecord.email,
+        phone: leadRecord.phone,
+        whatsappNumber: leadRecord.whatsapp_number,
+        companyName: leadRecord.company_name,
+        location: leadRecord.location,
+        serviceInterested: leadRecord.service_interested,
+        message: leadRecord.message,
+        preferredContactMethod: leadRecord.preferred_contact_method,
+        formData: leadRecord.form_data,
+        status: "new",
+        source: leadRecord.source,
+        pageUrl: leadRecord.page_url,
+        ipAddress: leadRecord.ip_address,
+        userAgent: leadRecord.user_agent,
+        adminNotes: "",
+        createdAt: now,
+        updatedAt: now,
+      });
+      console.log(`[MongoDB] Lead saved directly to DB: ${generatedId}`);
+    } catch (mongoErr: any) {
+      console.error("[MongoDB] Database error while saving lead:", mongoErr);
+      return NextResponse.json(
+        { error: "Database error. Could not save lead submission." },
+        { status: 500 }
+      );
+    }
 
-    // 5. Also save to MongoDB (non-blocking — failure does not affect the response)
-    Promise.resolve().then(async () => {
-      try {
-        await connectDatabase();
-        await LeadModel.create({
-          jsonId: newLead.id,
-          fullName: newLead.full_name,
-          email: newLead.email,
-          phone: newLead.phone,
-          whatsappNumber: newLead.whatsapp_number,
-          companyName: newLead.company_name,
-          location: newLead.location,
-          serviceInterested: newLead.service_interested,
-          message: newLead.message,
-          preferredContactMethod: newLead.preferred_contact_method,
-          formData: newLead.form_data,
-          status: newLead.status,
-          source: newLead.source,
-          pageUrl: newLead.page_url,
-          ipAddress: newLead.ip_address,
-          userAgent: newLead.user_agent,
-          adminNotes: "",
-          createdAt: new Date(newLead.created_at),
-          updatedAt: new Date(newLead.updated_at),
-        });
-        console.log(`[MongoDB] Lead saved: ${newLead.id}`);
-      } catch (mongoErr: any) {
-        // Log MongoDB errors without exposing them to the client
-        console.error(`[MongoDB] Failed to save lead ${newLead.id}:`, mongoErr.message);
-      }
-    });
+    const newLead = {
+      id: createdMongoLead.jsonId || createdMongoLead._id.toString(),
+      full_name: createdMongoLead.fullName || "",
+      email: createdMongoLead.email || "",
+      phone: createdMongoLead.phone || "",
+      whatsapp_number: createdMongoLead.whatsappNumber || "",
+      company_name: createdMongoLead.companyName || "",
+      location: createdMongoLead.location || "",
+      service_interested: createdMongoLead.serviceInterested || "",
+      message: createdMongoLead.message || "",
+      preferred_contact_method: createdMongoLead.preferredContactMethod || "",
+      form_data: createdMongoLead.formData || {},
+      status: createdMongoLead.status || "new",
+      source: createdMongoLead.source || "website",
+      page_url: createdMongoLead.pageUrl || "",
+      ip_address: createdMongoLead.ipAddress || "",
+      user_agent: createdMongoLead.userAgent || "",
+      admin_notes: "",
+      assigned_to: "",
+      created_at: createdMongoLead.createdAt.toISOString(),
+      updated_at: createdMongoLead.updatedAt.toISOString(),
+    };
 
     // 6. Trigger background emails
     queueLeadSubmissionEmails(newLead);
