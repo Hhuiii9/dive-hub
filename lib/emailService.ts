@@ -210,132 +210,120 @@ export async function sendEmailTask(emailLogId: string): Promise<boolean> {
   }
 }
 
-// Queue lead-related emails in the background (swallowing errors so lead creation isn't blocked)
-export function queueLeadSubmissionEmails(lead: Lead) {
-  // Use setImmediate to process background emails asynchronously without blocking the response
-  setImmediate(async () => {
-    try {
-      const config = settingsDB.get();
-      const settings = config.settings;
-      const frontUrl = process.env.ADMIN_FRONTEND_URL || "http://localhost:3000";
-      const detailsUrl = `${frontUrl}/admin/leads/${lead.id}`;
+// Synchronously send lead-related emails and return delivery status
+export async function sendLeadNotificationEmails(lead: Lead): Promise<{ adminSent: boolean; customerSent?: boolean }> {
+  let adminSent = false;
+  let customerSent = false;
 
-      // A. Admin notification email
-      const adminRecipient = settings.notification_email || "admin@example.com";
-      const adminSubject = `New Lead Received – ${lead.full_name}`;
-      
-      const adminHtmlTable = generateAdminLeadHtmlTable(lead);
-      const adminHtmlBody = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>New Lead Received</title>
-        </head>
-        <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: Arial, sans-serif; -webkit-font-smoothing: antialiased;">
-          <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f3f4f6; padding: 30px 10px;">
-            <tr>
-              <td align="center">
-                <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-                  <!-- Header with Logo -->
-                  <tr>
-                    <td align="center" style="background-color: #03131d; padding: 25px 20px; border-bottom: 3px solid #22d3ee;">
-                      <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;">
-                        DIVE HUB MARINE
-                      </h1>
-                      <span style="color: #22d3ee; font-size: 11px; text-transform: uppercase; font-weight: bold; letter-spacing: 0.25em;">
-                        Lead Notification
-                      </span>
-                    </td>
-                  </tr>
-                  <!-- Body Content -->
-                  <tr>
-                    <td style="padding: 30px 40px;">
-                      <h2 style="color: #0f172a; margin-top: 0; font-size: 18px; font-weight: 700;">
-                        Hello Admin,
-                      </h2>
-                      <p style="color: #475569; font-size: 14px; line-height: 1.6; margin-bottom: 25px;">
-                        A new lead form submission has been captured. Below are the submission details:
-                      </p>
-                      
-                      ${adminHtmlTable}
+  try {
+    const config = settingsDB.get();
+    const settings = config.settings;
+    const adminRecipient = process.env.ADMIN_NOTIFICATION_EMAIL || settings.notification_email || "divehub@divehubmarineservices.com";
+    const frontUrl = process.env.ADMIN_FRONTEND_URL || "http://localhost:3000";
+    const detailsUrl = `${frontUrl}/admin/leads/${lead.id}`;
 
-                      <!-- CTA Button -->
-                      <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-top: 35px; margin-bottom: 10px;">
-                        <tr>
-                          <td align="center">
-                            <a href="${detailsUrl}" target="_blank" style="background-color: #06b6d4; color: #ffffff; padding: 12px 30px; font-size: 13px; font-weight: bold; text-decoration: none; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.1em; box-shadow: 0 4px 10px rgba(6,182,212,0.25); display: inline-block;">
-                              View Lead Details
-                            </a>
-                          </td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                  <!-- Footer -->
-                  <tr>
-                    <td align="center" style="background-color: #f8fafc; border-top: 1px solid #f1f5f9; padding: 20px 40px; text-align: center;">
-                      <p style="color: #64748b; font-size: 11px; line-height: 1.5; margin: 0;">
-                        &copy; ${new Date().getFullYear()} Dive Hub Marine Services. All rights reserved.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-        </body>
-        </html>
-      `;
+    // A. Admin notification email
+    const adminSubject = `New Lead Received – ${lead.full_name || "Enquiry"}`;
+    const adminHtmlTable = generateAdminLeadHtmlTable(lead);
+    const adminHtmlBody = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>New Lead Received</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: Arial, sans-serif;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f3f4f6; padding: 30px 10px;">
+          <tr>
+            <td align="center">
+              <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+                <tr>
+                  <td align="center" style="background-color: #03131d; padding: 25px 20px; border-bottom: 3px solid #22d3ee;">
+                    <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;">
+                      DIVE HUB MARINE
+                    </h1>
+                    <span style="color: #22d3ee; font-size: 11px; text-transform: uppercase; font-weight: bold; letter-spacing: 0.25em;">
+                      Lead Notification
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 30px 40px;">
+                    <h2 style="color: #0f172a; margin-top: 0; font-size: 18px; font-weight: 700;">
+                      New Lead Received
+                    </h2>
+                    ${adminHtmlTable}
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-top: 35px; margin-bottom: 10px;">
+                      <tr>
+                        <td align="center">
+                          <a href="${detailsUrl}" target="_blank" style="background-color: #06b6d4; color: #ffffff; padding: 12px 30px; font-size: 13px; font-weight: bold; text-decoration: none; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.1em; box-shadow: 0 4px 10px rgba(6,182,212,0.25); display: inline-block;">
+                            View Lead
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="background-color: #f8fafc; border-top: 1px solid #f1f5f9; padding: 20px 40px; text-align: center;">
+                    <p style="color: #64748b; font-size: 11px; line-height: 1.5; margin: 0;">
+                      &copy; ${new Date().getFullYear()} Dive Hub Marine Services. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
 
-      const adminPlainTextBody = generateAdminLeadPlainText(lead, detailsUrl);
+    const adminEmailLog = emailsDB.create({
+      lead_id: lead.id,
+      email_type: "admin_notification",
+      recipient: adminRecipient,
+      subject: adminSubject,
+      message: adminHtmlBody,
+      status: "pending"
+    });
 
-      const adminEmailLog = emailsDB.create({
+    adminSent = await sendEmailTask(adminEmailLog.id);
+
+    // B. Customer confirmation email
+    const sendCustomerConf = process.env.SEND_LEAD_CONFIRMATION_EMAIL === "true" || settings.send_lead_confirmation_email;
+    if (sendCustomerConf && lead.email && lead.email.trim() !== "") {
+      const confSubject = "Thank you for contacting Dive Hub Marine";
+      const confMessage = `Hello ${lead.full_name || "Valued Customer"},\n\nThank you for contacting Dive Hub Marine.\n\nWe have received your enquiry regarding ${lead.service_interested || "our services"}. Our team will contact you shortly.\n\nReference ID: ${lead.id}\n\nLocation:\nNear Angamaly Railway Station\nAngamaly, Kerala\n\nRegards,\nDive Hub Marine`;
+
+      const confEmailLog = emailsDB.create({
         lead_id: lead.id,
-        email_type: "admin_notification",
-        recipient: adminRecipient,
-        subject: adminSubject,
-        message: adminHtmlBody,
+        email_type: "lead_confirmation",
+        recipient: lead.email,
+        subject: confSubject,
+        message: confMessage,
         status: "pending"
       });
 
-      // Trigger admin email send
-      await sendEmailTask(adminEmailLog.id);
-
-      // B. Confirmation email to the lead
-      if (settings.send_lead_confirmation_email && lead.email) {
-        const placeholderValues: PlaceholderData = {
-          full_name: lead.full_name,
-          first_name: lead.full_name.split(" ")[0],
-          email: lead.email,
-          phone: lead.phone,
-          service_interested: lead.service_interested,
-          company_name: lead.company_name,
-          lead_id: lead.id,
-          submitted_at: new Date(lead.created_at).toLocaleString()
-        };
-
-        const subjectTemplate = settings.confirmation_email_subject || "Thank you for contacting us";
-        const messageTemplate = settings.confirmation_email_message || "We received your enquiry and will contact you shortly.";
-
-        const confSubject = compileTemplate(subjectTemplate, placeholderValues);
-        const confMessage = compileTemplate(messageTemplate, placeholderValues);
-
-        const confEmailLog = emailsDB.create({
-          lead_id: lead.id,
-          email_type: "lead_confirmation",
-          recipient: lead.email,
-          subject: confSubject,
-          message: confMessage,
-          status: "pending"
-        });
-
-        // Trigger lead email send
-        await sendEmailTask(confEmailLog.id);
+      try {
+        customerSent = await sendEmailTask(confEmailLog.id);
+      } catch (custErr) {
+        console.error("Customer confirmation email failed silently:", custErr);
       }
-    } catch (err) {
-      console.error("Error in background email sender helper:", err);
     }
+  } catch (err: any) {
+    console.error("Error sending lead notification emails:", err.message || err);
+  }
+
+  return { adminSent, customerSent };
+}
+
+export function queueLeadSubmissionEmails(lead: Lead) {
+  setImmediate(() => {
+    sendLeadNotificationEmails(lead).catch((err) => {
+      console.error("Background lead email error:", err);
+    });
   });
 }
+

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { settingsDB, leadsDB, FormField } from "@/lib/db";
-import { queueLeadSubmissionEmails } from "@/lib/emailService";
+import { settingsDB, FormField } from "@/lib/db";
+import { sendLeadNotificationEmails } from "@/lib/emailService";
 import { connectDatabase } from "@/lib/mongodb";
 import LeadModel from "@/lib/models/Lead";
 
@@ -138,13 +138,23 @@ export async function POST(request: NextRequest) {
       updated_at: createdMongoLead.updatedAt.toISOString(),
     };
 
-    // 6. Trigger background emails
-    queueLeadSubmissionEmails(newLead);
+    // 5. Send notification email after MongoDB save
+    let emailStatus = "sent";
+    try {
+      const emailResult = await sendLeadNotificationEmails(newLead);
+      if (!emailResult.adminSent) {
+        emailStatus = "failed";
+      }
+    } catch (emailErr) {
+      console.error("[Email] Failed to deliver admin notification:", emailErr);
+      emailStatus = "failed";
+    }
 
     return NextResponse.json({
       success: true,
-      message: config.settings.success_message || "Thank you. We will contact you shortly.",
-      lead_id: newLead.id
+      message: "Lead submitted successfully.",
+      leadId: newLead.id,
+      emailNotification: emailStatus
     });
 
   } catch (error: any) {
@@ -155,3 +165,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
