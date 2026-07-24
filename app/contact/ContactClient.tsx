@@ -476,7 +476,7 @@ export default function ContactClient() {
               </div>
 
               <iframe
-                src="https://maps.google.com/maps?q=Dive%20Hub%20%26%20Marine%20Services,%20Angamaly,%20Kerala,%20India&z=17&hl=en&output=embed"
+                src="https://maps.google.com/maps?q=10.1926394,76.3869289&z=17&output=embed"
                 className="h-[350px] w-full sm:h-[620px] opacity-80"
                 loading="lazy"
                 referrerPolicy="no-referrer-when-downgrade"
