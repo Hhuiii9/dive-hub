@@ -12,35 +12,54 @@ export function verifyPassword(password: string, hash: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(calculated), Buffer.from(hash));
 }
 
+function cleanEnv(val?: string): string {
+  if (!val) return "";
+  return val.replace(/^["']|["']$/g, "").trim();
+}
+
 /**
- * Idempotently seed the initial Super Admin account if no Super Admin user exists.
+ * Idempotently seed or update the initial Super Admin account in MongoDB.
  */
 export async function seedSuperAdmin(): Promise<void> {
   await connectDatabase();
-  const existingCount = await UserModel.countDocuments({ role: "super_admin" });
 
-  if (existingCount > 0) {
-    return;
-  }
-
-  const name = process.env.SUPER_ADMIN_NAME || "Super Admin";
-  const email = (process.env.SUPER_ADMIN_EMAIL || "divehub@divehubmarineservices.com").toLowerCase().trim();
-  const rawPassword = process.env.SUPER_ADMIN_PASSWORD || "Admin@123";
-
-  if (!email || !rawPassword) {
-    console.warn("[Seed] Missing SUPER_ADMIN_EMAIL or SUPER_ADMIN_PASSWORD env vars.");
-    return;
-  }
+  const name = cleanEnv(process.env.SUPER_ADMIN_NAME) || "Super Admin";
+  const email = (cleanEnv(process.env.SUPER_ADMIN_EMAIL) || "divehub@divehubmarineservices.com").toLowerCase();
+  const rawPassword = cleanEnv(process.env.SUPER_ADMIN_PASSWORD) || "Admin@123";
 
   const passwordHash = hashPassword(rawPassword);
 
-  await UserModel.create({
-    name,
-    email,
-    passwordHash,
-    role: "super_admin",
-    isActive: true,
-  });
+  let user = await UserModel.findOne({ email });
+  if (!user) {
+    user = await UserModel.findOne({ role: "super_admin" });
+  }
 
-  console.log("[Seed] Super Admin account created successfully.");
+  if (user) {
+    let updated = false;
+    if (user.email !== email) {
+      user.email = email;
+      updated = true;
+    }
+    if (!user.isActive) {
+      user.isActive = true;
+      updated = true;
+    }
+    if (user.passwordHash !== passwordHash) {
+      user.passwordHash = passwordHash;
+      updated = true;
+    }
+    if (updated) {
+      await user.save();
+      console.log("[Seed] Super Admin account synced with current environment variables.");
+    }
+  } else {
+    await UserModel.create({
+      name,
+      email,
+      passwordHash,
+      role: "super_admin",
+      isActive: true,
+    });
+    console.log("[Seed] Super Admin account created successfully.");
+  }
 }
