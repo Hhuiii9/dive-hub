@@ -3,7 +3,7 @@ import { getAuthenticatedUser, ROLE_PERMISSIONS } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   try {
-    const user = getAuthenticatedUser(request);
+    const user = await getAuthenticatedUser(request);
     if (!user) {
       return NextResponse.json(
         { success: false, message: "Unauthorized." },
@@ -16,15 +16,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        id: user.id,
+        id: String(user._id),
         name: user.name,
         email: user.email,
         role: user.role,
-        permissions
-      }
+        permissions,
+      },
     });
   } catch (error: any) {
-    console.error("Auth me check error:", error);
+    console.error("[Auth ME API] Error:", error);
     return NextResponse.json(
       { success: false, message: "An unexpected error occurred." },
       { status: 500 }

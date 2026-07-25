@@ -1,88 +1,75 @@
 import { NextRequest, NextResponse } from "next/server";
-import { usersDB, resetTokensDB } from "@/lib/db";
-import nodemailer from "nodemailer";
+import crypto from "crypto";
+import { connectDatabase } from "@/lib/mongodb";
+import UserModel from "@/lib/models/User";
+import PasswordResetTokenModel from "@/lib/models/PasswordResetToken";
+import { sendEmail } from "@/lib/emailService";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  const genericResponse = NextResponse.json({
+    success: true,
+    message: "If an account exists, password reset instructions have been sent.",
+  });
+
   try {
     const body = await request.json();
     const { email } = body;
 
     if (!email) {
-      return NextResponse.json(
-        { success: false, message: "Email address is required." },
-        { status: 400 }
-      );
+      return genericResponse;
     }
 
-    const user = usersDB.getByEmail(email);
-    
-    // Always return success message for security
-    const successResponse = () => {
-      return NextResponse.json({
-        success: true,
-        message: "If an account exists, password reset instructions have been sent."
-      });
-    };
+    await connectDatabase();
 
-    if (!user || !user.is_active) {
-      // Still return success to prevent email verification probing
-      return successResponse();
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const user = await UserModel.findOne({ email: normalizedEmail, role: "super_admin", isActive: true });
+
+    if (!user) {
+      return genericResponse;
     }
 
-    // Generate reset token
-    const reset = resetTokensDB.create(user.email);
-    
-    const domain = process.env.ADMIN_FRONTEND_URL || "http://localhost:3000";
-    const resetUrl = `${domain}/admin/reset-password/${reset.token}`;
-
-    console.log(`[AUTH] Generated reset password link for ${user.email}: ${resetUrl}`);
-
-    // Try sending email via nodemailer
-    const backend = process.env.EMAIL_BACKEND || "console";
-    const defaultFrom = process.env.DEFAULT_FROM_EMAIL || "no-reply@divehubmarineservices.com";
-
-    if (backend === "smtp") {
-      const port = parseInt(process.env.EMAIL_PORT || "587", 10);
-      const transporter = nodemailer.createTransport({
-        host: process.env.EMAIL_HOST || "",
-        port,
-        secure: process.env.EMAIL_USE_TLS === "true" ? (port === 465) : false,
-        auth: process.env.EMAIL_HOST_USER && process.env.EMAIL_HOST_PASSWORD ? {
-          user: process.env.EMAIL_HOST_USER,
-          pass: process.env.EMAIL_HOST_PASSWORD
-        } : undefined,
-        tls: { rejectUnauthorized: false }
-      });
-
-      await transporter.sendMail({
-        from: defaultFrom,
-        to: user.email,
-        subject: "Password Reset Instructions - Dive Hub Admin",
-        text: `Hello ${user.name},\n\nYou requested to reset your password. Please click on the link below or copy it to your browser to set a new password:\n\n${resetUrl}\n\nThis link is valid for 15 minutes.\n\nRegards,\nDive Hub Marine Services`,
-        html: `
-          <div style="font-family: sans-serif; padding: 20px; color: #333;">
-            <h2>Password Reset Request</h2>
-            <p>Hello ${user.name},</p>
-            <p>We received a request to reset the password for your Dive Hub Admin account. Click the button below to set a new password:</p>
-            <p style="margin: 30px 0;">
-              <a href="${resetUrl}" style="background-color: #06b6d4; color: white; padding: 12px 25px; text-decoration: none; font-weight: bold; border-radius: 5px;">Reset Password</a>
-            </p>
-            <p>Or copy and paste this link into your browser:</p>
-            <p style="word-break: break-all;"><a href="${resetUrl}">${resetUrl}</a></p>
-            <p>This link is only valid for 15 minutes. If you did not request this, you can safely ignore this email.</p>
-            <hr style="border: 0; border-top: 1px solid #eee; margin-top: 30px;">
-            <p style="font-size: 11px; color: #999;">Dive Hub Marine Services</p>
-          </div>
-        `
-      });
-    }
-
-    return successResponse();
-  } catch (error: any) {
-    console.error("Forgot password API error:", error);
-    return NextResponse.json(
-      { success: false, message: "An unexpected error occurred." },
-      { status: 500 }
+    // Invalidate existing unused tokens for this user
+    await PasswordResetTokenModel.updateMany(
+      { userId: user._id, usedAt: null },
+      { usedAt: new Date() }
     );
+
+    // Generate random raw token & hashed token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+
+    await PasswordResetTokenModel.create({
+      userId: user._id,
+      tokenHash,
+      expiresAt,
+    });
+
+    const frontendUrl = process.env.ADMIN_FRONTEND_URL || "https://dive-hub.vercel.app";
+    const resetUrl = `${frontendUrl}/admin/reset-password/${rawToken}`;
+
+    const htmlBody = `
+      <div style="font-family: sans-serif; padding: 20px;">
+        <h2>Password Reset Request</h2>
+        <p>You requested a password reset for your Dive Hub Super Admin account.</p>
+        <p>Click the link below to set a new password (link expires in 30 minutes):</p>
+        <p><a href="${resetUrl}" style="display: inline-block; padding: 12px 24px; background: #06b6d4; color: #fff; text-decoration: none; border-radius: 6px;">Reset Password</a></p>
+        <p>If you did not request this, please ignore this email.</p>
+      </div>
+    `;
+
+    await sendEmail({
+      recipient: user.email,
+      subject: "Password Reset Instructions - Dive Hub",
+      html: htmlBody,
+    });
+
+    return genericResponse;
+  } catch (error: any) {
+    console.error("[Forgot Password API] Error:", error);
+    return genericResponse;
   }
 }

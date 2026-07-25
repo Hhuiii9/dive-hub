@@ -2,16 +2,29 @@ import mongoose from "mongoose";
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
-if (!MONGODB_URI) {
-  throw new Error(
-    "MONGODB_URI is not configured. Please add it to your .env.local file."
-  );
+/**
+ * Safely verify required runtime environment variables without logging values.
+ */
+export function checkRequiredEnvVars(): { valid: boolean; missing: string[] } {
+  const required = [
+    "MONGODB_URI",
+    "SUPER_ADMIN_EMAIL",
+    "EMAIL_HOST",
+    "EMAIL_PORT",
+    "EMAIL_HOST_USER",
+    "EMAIL_HOST_PASSWORD",
+    "DEFAULT_FROM_EMAIL",
+    "ADMIN_NOTIFICATION_EMAIL",
+    "ADMIN_FRONTEND_URL",
+  ];
+
+  const missing = required.filter((varName) => !process.env[varName]);
+  if (missing.length > 0) {
+    console.warn(`[Env Check] Missing environment variables: ${missing.join(", ")}`);
+  }
+  return { valid: missing.length === 0, missing };
 }
 
-/**
- * Global mongoose connection cache to prevent duplicate connections
- * during Next.js hot reload in development.
- */
 interface MongooseCache {
   connection: typeof mongoose | null;
   promise: Promise<typeof mongoose> | null;
@@ -31,13 +44,13 @@ if (!global.mongooseConnection) {
   global.mongooseConnection = cached;
 }
 
-/**
- * Connect to MongoDB using a cached singleton connection.
- * Safe to call multiple times — returns the existing connection if available.
- */
 export async function connectDatabase(): Promise<typeof mongoose> {
   if (cached.connection) {
     return cached.connection;
+  }
+
+  if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI is not configured in environment variables.");
   }
 
   if (!cached.promise) {
@@ -46,13 +59,12 @@ export async function connectDatabase(): Promise<typeof mongoose> {
     };
 
     cached.promise = mongoose
-      .connect(MONGODB_URI as string, opts)
-      .then((mongooseInstance) => {
+      .connect(MONGODB_URI, opts)
+      .then(async (mongooseInstance) => {
         console.log("[MongoDB] Connected successfully.");
         return mongooseInstance;
       })
       .catch((err) => {
-        // Clear the promise on failure so next call retries
         cached.promise = null;
         console.error("[MongoDB] Connection failed:", err.message);
         throw err;

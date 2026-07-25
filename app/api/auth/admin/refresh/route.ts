@@ -1,69 +1,75 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sessionsDB, usersDB } from "@/lib/db";
+import crypto from "crypto";
+import { connectDatabase } from "@/lib/mongodb";
+import UserModel from "@/lib/models/User";
+import SessionModel from "@/lib/models/Session";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { refresh_token } = body;
+    const refreshToken = body.refresh_token || body.refreshToken;
 
-    if (!refresh_token) {
+    if (!refreshToken) {
       return NextResponse.json(
         { success: false, message: "Refresh token is required." },
         { status: 400 }
       );
     }
 
-    const session = sessionsDB.getByRefreshToken(refresh_token);
-    if (!session) {
+    await connectDatabase();
+
+    const session = await SessionModel.findOne({ token: refreshToken });
+    if (!session || new Date(session.expiresAt).getTime() < Date.now()) {
+      if (session) await SessionModel.deleteOne({ _id: session._id });
       return NextResponse.json(
-        { success: false, message: "Invalid refresh token." },
+        { success: false, message: "Invalid or expired refresh token." },
         { status: 401 }
       );
     }
 
-    // Check if refresh token is expired
-    if (new Date(session.refresh_expires_at).getTime() < Date.now()) {
-      sessionsDB.deleteByToken(session.token);
+    const user = await UserModel.findById(session.userId);
+    if (!user || !user.isActive || user.role !== "super_admin") {
+      await SessionModel.deleteOne({ _id: session._id });
       return NextResponse.json(
-        { success: false, message: "Refresh token has expired. Please log in again." },
+        { success: false, message: "User account is disabled or unauthorized." },
         { status: 401 }
       );
     }
 
-    const user = usersDB.getById(session.user_id);
-    if (!user || !user.is_active) {
-      sessionsDB.deleteByToken(session.token);
-      return NextResponse.json(
-        { success: false, message: "User account is disabled." },
-        { status: 401 }
-      );
-    }
+    await SessionModel.deleteOne({ _id: session._id });
 
-    // Invalidate old session and create a new one
-    sessionsDB.deleteByToken(session.token);
-    const newSession = sessionsDB.create(user.id);
+    const newToken = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+    await SessionModel.create({
+      userId: user._id,
+      token: newToken,
+      expiresAt,
+      ipAddress: request.headers.get("x-forwarded-for") || "",
+      userAgent: request.headers.get("user-agent") || "",
+    });
+
+    const isProd = process.env.NODE_ENV === "production";
     const response = NextResponse.json({
       success: true,
       message: "Token refreshed successfully.",
       data: {
-        access_token: newSession.token,
-        refresh_token: newSession.refresh_token
-      }
+        access_token: newToken,
+        refresh_token: newToken,
+      },
     });
 
-    const isProd = process.env.NODE_ENV === "production";
-    response.cookies.set("admin_token", newSession.token, {
+    response.cookies.set("admin_token", newToken, {
       httpOnly: true,
       secure: isProd,
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60
+      maxAge: 24 * 60 * 60,
     });
 
     return response;
   } catch (error: any) {
-    console.error("Token refresh API error:", error);
+    console.error("[Refresh API] Error:", error);
     return NextResponse.json(
       { success: false, message: "An unexpected error occurred." },
       { status: 500 }

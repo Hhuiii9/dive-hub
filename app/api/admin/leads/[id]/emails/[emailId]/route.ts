@@ -1,35 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
+import { connectDatabase } from "@/lib/mongodb";
 import { getAuthenticatedUser } from "@/lib/auth";
-import { leadsDB, emailsDB } from "@/lib/db";
+import EmailHistoryModel from "@/lib/models/EmailHistory";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; emailId: string }> }
 ) {
   try {
-    const { id: leadId, emailId } = await params;
-    const currentUser = getAuthenticatedUser(request);
-    
+    const currentUser = await getAuthenticatedUser(request);
     if (!currentUser) {
       return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
     }
 
-    const lead = leadsDB.getById(leadId);
-    if (!lead) {
-      return NextResponse.json({ error: "Lead not found." }, { status: 404 });
-    }
+    const { emailId } = await params;
+    await connectDatabase();
 
-    const email = emailsDB.getById(emailId);
-    if (!email || email.lead_id !== leadId) {
+    const emailDoc = await EmailHistoryModel.findById(emailId);
+    if (!emailDoc) {
       return NextResponse.json({ error: "Email log not found." }, { status: 404 });
     }
 
+    const email = {
+      id: String(emailDoc._id),
+      lead_id: String(emailDoc.leadId),
+      sent_by: emailDoc.sentBy || "System",
+      email_type: emailDoc.emailType,
+      recipient: emailDoc.recipient,
+      cc: emailDoc.cc || "",
+      bcc: emailDoc.bcc || "",
+      subject: emailDoc.subject,
+      body: emailDoc.htmlBody || emailDoc.textBody || "",
+      status: emailDoc.status,
+      provider_message_id: emailDoc.providerMessageId || "",
+      safe_error_message: emailDoc.safeErrorMessage || "",
+      sent_at: emailDoc.sentAt ? emailDoc.sentAt.toISOString() : null,
+      created_at: emailDoc.createdAt.toISOString(),
+    };
+
     return NextResponse.json({
       success: true,
-      data: email
+      data: email,
     });
   } catch (error: any) {
-    console.error("GET single email log error:", error);
+    console.error("[Admin GET Email Detail API] Error:", error);
     return NextResponse.json(
       { error: "An unexpected error occurred." },
       { status: 500 }

@@ -1,89 +1,97 @@
 import { NextRequest, NextResponse } from "next/server";
-import { usersDB, sessionsDB, hashPassword } from "@/lib/db";
+import crypto from "crypto";
+import { connectDatabase } from "@/lib/mongodb";
+import UserModel from "@/lib/models/User";
+import SessionModel from "@/lib/models/Session";
+import { hashPassword, seedSuperAdmin } from "@/lib/seed";
 
 export async function POST(request: NextRequest) {
   try {
+    await connectDatabase();
+    await seedSuperAdmin();
+
     const body = await request.json();
     const { email, password } = body;
 
     if (!email || !password) {
       return NextResponse.json(
-        { success: false, message: "Email/username and password are required." },
+        { success: false, message: "Email and password are required." },
         { status: 400 }
       );
     }
 
-    // Try finding user by email or username
-    const user = usersDB.getByEmail(email);
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const user = await UserModel.findOne({ email: normalizedEmail });
 
-    // Generic response for security to not reveal if user exists
     const invalidResponse = () => {
-      console.warn(`[AUTH] Failed login attempt for user: ${email}`);
       return NextResponse.json(
-        { success: false, message: "Invalid email/username or password." },
+        { success: false, message: "Invalid email or password." },
         { status: 401 }
       );
     };
 
-    if (!user) {
+    if (!user || user.role !== "super_admin") {
       return invalidResponse();
     }
 
-    if (!user.is_active) {
+    if (!user.isActive) {
       return NextResponse.json(
-        { success: false, message: "Your account is inactive. Please contact support." },
+        { success: false, message: "Your account is inactive." },
         { status: 403 }
       );
     }
 
-    // Hash the input password and compare
-    const hashed = hashPassword(password);
-    if (user.password_hash !== hashed) {
+    const hashedInput = hashPassword(password);
+    if (user.passwordHash !== hashedInput) {
       return invalidResponse();
     }
 
-    // Update last login info
-    const ip = request.headers.get("x-forwarded-for") || "127.0.0.1";
-    usersDB.update(user.id, {
-      last_login_at: new Date().toISOString(),
-      last_login_ip: ip
+    // Update last login
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    // Create session token in MongoDB
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await SessionModel.create({
+      userId: user._id,
+      token,
+      expiresAt,
+      ipAddress: request.headers.get("x-forwarded-for") || "",
+      userAgent: request.headers.get("user-agent") || "",
     });
 
-    // Create a new session
-    const session = sessionsDB.create(user.id);
+    const isProd = process.env.NODE_ENV === "production";
 
-    // Prepare response
     const response = NextResponse.json({
       success: true,
       message: "Login successful.",
       data: {
         user: {
-          id: user.id,
+          id: String(user._id),
           name: user.name,
           email: user.email,
-          role: user.role
+          role: user.role,
         },
-        access_token: session.token,
-        refresh_token: session.refresh_token
-      }
+        access_token: token,
+        refresh_token: token,
+      },
     });
 
-    // Set cookie for browser session authentication
-    // Determine cookie parameters
-    const isProd = process.env.NODE_ENV === "production";
-    response.cookies.set("admin_token", session.token, {
+    response.cookies.set("admin_token", token, {
       httpOnly: true,
       secure: isProd,
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 // 1 hour
+      maxAge: 24 * 60 * 60,
     });
 
     return response;
   } catch (error: any) {
-    console.error("Login API error:", error);
+    console.error("[Login API] Error:", error);
     return NextResponse.json(
-      { success: false, message: "An unexpected server error occurred." },
+      { success: false, message: "An error occurred during authentication." },
       { status: 500 }
     );
   }

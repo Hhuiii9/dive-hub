@@ -1,40 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
-import { settingsDB, FormField } from "@/lib/db";
-import { sendLeadNotificationEmails } from "@/lib/emailService";
 import { connectDatabase } from "@/lib/mongodb";
 import LeadModel from "@/lib/models/Lead";
+import LeadFormSettingsModel from "@/lib/models/LeadFormSettings";
+import { handleLeadEmails } from "@/lib/emailService";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
+    await connectDatabase();
+
     const ip = request.headers.get("x-forwarded-for") || "127.0.0.1";
     const userAgent = request.headers.get("user-agent") || "";
-    
-    // 1. Get active settings
-    const config = settingsDB.get();
-    if (!config.is_active) {
+
+    const settingsDoc = await LeadFormSettingsModel.findOne({ name: "default" });
+    const isActive = settingsDoc ? settingsDoc.is_active : true;
+    const fields = settingsDoc?.settings?.fields || [
+      { key: "full_name", label: "Full Name", type: "text", required: true, enabled: true },
+      { key: "email", label: "Email Address", type: "email", required: true, enabled: true },
+      { key: "phone", label: "Phone Number", type: "text", required: true, enabled: true },
+      { key: "service_interested", label: "Service Interested In", type: "select", required: false, enabled: true },
+      { key: "message", label: "Your Message", type: "textarea", required: true, enabled: true },
+    ];
+
+    if (!isActive) {
       return NextResponse.json({ error: "Submissions are temporarily disabled." }, { status: 403 });
     }
 
     const body = await request.json();
-
-    // 2. Perform dynamic validation based on settings
-    const fields: FormField[] = config.settings.fields || [];
     const formData: Record<string, any> = {};
     const validationErrors: Record<string, string> = {};
 
     for (const field of fields) {
       if (!field.enabled) continue;
-
       const value = body[field.key];
 
-      // Check required
       if (field.required && (value === undefined || value === null || value === "")) {
         validationErrors[field.key] = `${field.label} is required.`;
         continue;
       }
 
       if (value !== undefined && value !== null && value !== "") {
-        // Basic type validation
         if (field.type === "email") {
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
           if (!emailRegex.test(String(value))) {
@@ -46,123 +53,65 @@ export async function POST(request: NextRequest) {
     }
 
     if (Object.keys(validationErrors).length > 0) {
-      return NextResponse.json({ 
-        error: "Validation failed", 
-        fields: validationErrors 
-      }, { status: 400 });
+      return NextResponse.json({ error: "Validation failed", fields: validationErrors }, { status: 400 });
     }
 
-    // Check if fields are enabled in settings before mapping
-    const isEnabled = (key: string) => fields.some(f => f.key === key && f.enabled);
+    const isEnabled = (key: string) => fields.some((f) => f.key === key && f.enabled);
 
-    // 3. Map values ONLY for enabled fields
-    const leadRecord: any = {
-      full_name: isEnabled("full_name") ? (body.full_name || body.name || formData.full_name || "") : "",
-      email: isEnabled("email") ? (body.email || formData.email || "") : "",
-      phone: isEnabled("phone") ? (body.phone || formData.phone || "") : "",
-      whatsapp_number: isEnabled("whatsapp_number") ? (body.whatsapp_number || formData.whatsapp_number || "") : "",
-      company_name: isEnabled("company_name") ? (body.company_name || formData.company_name || "") : "",
-      location: isEnabled("location") ? (body.location || formData.location || "") : "",
-      service_interested: isEnabled("service_interested") ? (body.service_interested || formData.service_interested || "") : "",
-      message: isEnabled("message") ? (body.message || formData.message || "") : "",
-      preferred_contact_method: isEnabled("preferred_contact_method") ? (body.preferred_contact_method || formData.preferred_contact_method || "") : "",
-      form_data: formData,
-      source: body.source || "website",
-      page_url: body.page_url || request.headers.get("referer") || "",
-      ip_address: ip,
-      user_agent: userAgent
-    };
+    const fullName = isEnabled("full_name") ? (body.full_name || body.name || formData.full_name || "") : "";
+    const email = isEnabled("email") ? (body.email || formData.email || "") : "";
+    const phone = isEnabled("phone") ? (body.phone || formData.phone || "") : "";
+    const whatsappNumber = isEnabled("whatsapp_number") ? (body.whatsapp_number || formData.whatsapp_number || "") : "";
+    const companyName = isEnabled("company_name") ? (body.company_name || formData.company_name || "") : "";
+    const location = isEnabled("location") ? (body.location || formData.location || "") : "";
+    const serviceInterested = isEnabled("service_interested") ? (body.service_interested || formData.service_interested || "") : "";
+    const message = isEnabled("message") ? (body.message || formData.message || "") : "";
+    const preferredContactMethod = isEnabled("preferred_contact_method") ? (body.preferred_contact_method || formData.preferred_contact_method || "") : "";
 
-    // Spam filter / protection: quick check if enabled fields are all empty
-    if (!leadRecord.full_name && !leadRecord.email && !leadRecord.phone) {
+    if (!fullName && !email && !phone) {
       return NextResponse.json({ error: "Invalid submission data" }, { status: 400 });
     }
 
-    // 4. Save lead directly to MongoDB database
-    let createdMongoLead: any = null;
-    try {
-      await connectDatabase();
-      const generatedId = "lead_" + Math.random().toString(36).substr(2, 9);
-      const now = new Date();
-      
-      createdMongoLead = await LeadModel.create({
-        jsonId: generatedId,
-        fullName: leadRecord.full_name,
-        email: leadRecord.email,
-        phone: leadRecord.phone,
-        whatsappNumber: leadRecord.whatsapp_number,
-        companyName: leadRecord.company_name,
-        location: leadRecord.location,
-        serviceInterested: leadRecord.service_interested,
-        message: leadRecord.message,
-        preferredContactMethod: leadRecord.preferred_contact_method,
-        formData: leadRecord.form_data,
-        status: "new",
-        source: leadRecord.source,
-        pageUrl: leadRecord.page_url,
-        ipAddress: leadRecord.ip_address,
-        userAgent: leadRecord.user_agent,
-        adminNotes: "",
-        createdAt: now,
-        updatedAt: now,
-      });
-      console.log(`[MongoDB] Lead saved directly to DB: ${generatedId}`);
-    } catch (mongoErr: any) {
-      console.error("[MongoDB] Database error while saving lead:", mongoErr);
-      return NextResponse.json(
-        { error: "Database error. Could not save lead submission." },
-        { status: 500 }
-      );
-    }
+    // Save lead to MongoDB
+    const createdLead = await LeadModel.create({
+      fullName,
+      email,
+      phone,
+      whatsappNumber,
+      companyName,
+      location,
+      serviceInterested,
+      message,
+      preferredContactMethod,
+      formData,
+      status: "new",
+      source: body.source || "website",
+      pageUrl: body.page_url || request.headers.get("referer") || "",
+      ipAddress: ip,
+      userAgent,
+      adminNotes: "",
+    });
 
-    const newLead = {
-      id: createdMongoLead.jsonId || createdMongoLead._id.toString(),
-      full_name: createdMongoLead.fullName || "",
-      email: createdMongoLead.email || "",
-      phone: createdMongoLead.phone || "",
-      whatsapp_number: createdMongoLead.whatsappNumber || "",
-      company_name: createdMongoLead.companyName || "",
-      location: createdMongoLead.location || "",
-      service_interested: createdMongoLead.serviceInterested || "",
-      message: createdMongoLead.message || "",
-      preferred_contact_method: createdMongoLead.preferredContactMethod || "",
-      form_data: createdMongoLead.formData || {},
-      status: createdMongoLead.status || "new",
-      source: createdMongoLead.source || "website",
-      page_url: createdMongoLead.pageUrl || "",
-      ip_address: createdMongoLead.ipAddress || "",
-      user_agent: createdMongoLead.userAgent || "",
-      admin_notes: "",
-      assigned_to: "",
-      created_at: createdMongoLead.createdAt.toISOString(),
-      updated_at: createdMongoLead.updatedAt.toISOString(),
-    };
-
-    // 5. Send notification email after MongoDB save
-    let emailStatus = "sent";
+    // Send notifications after lead is saved in database
+    let emailNotification = "sent";
     try {
-      const emailResult = await sendLeadNotificationEmails(newLead);
-      if (!emailResult.adminSent) {
-        emailStatus = "failed";
-      }
-    } catch (error: any) {
-      console.error("Lead saved but email failed", error?.message || error);
-      emailStatus = "failed";
+      await handleLeadEmails({ lead: createdLead });
+    } catch (err: any) {
+      console.error("[Public Leads API] Saved lead, but email notification failed:", err.message || err);
+      emailNotification = "failed";
     }
 
     return NextResponse.json({
       success: true,
       message: "Lead submitted successfully.",
-      leadId: newLead.id,
-      emailNotification: emailStatus
+      leadId: String(createdLead._id),
+      emailNotification,
     });
-
   } catch (error: any) {
-    console.error("Error submitting lead:", error);
+    console.error("[Public Leads API] Error submitting lead:", error);
     return NextResponse.json(
-      { error: "An unexpected error occurred while processing your request." },
+      { error: "Database error. Could not process lead submission." },
       { status: 500 }
     );
   }
 }
-

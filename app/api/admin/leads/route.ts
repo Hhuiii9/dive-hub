@@ -1,115 +1,113 @@
 import { NextRequest, NextResponse } from "next/server";
-import { leadsDB, Lead } from "@/lib/db";
+import { connectDatabase } from "@/lib/mongodb";
+import LeadModel from "@/lib/models/Lead";
 import { isAdminAuthenticated } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  if (!isAdminAuthenticated(request)) {
+  const isAuth = await isAdminAuthenticated(request);
+  if (!isAuth) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
+    await connectDatabase();
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get("page") || "1");
-    const pageSize = parseInt(searchParams.get("page_size") || "20");
-    const search = searchParams.get("search")?.toLowerCase() || "";
+    const page = parseInt(searchParams.get("page") || "1", 10);
+    const pageSize = parseInt(searchParams.get("page_size") || "20", 10);
+    const search = searchParams.get("search")?.trim() || "";
     const status = searchParams.get("status") || "";
     const source = searchParams.get("source") || "";
-    const assignedTo = searchParams.get("assigned_to") || "";
     const dateFrom = searchParams.get("date_from") || "";
     const dateTo = searchParams.get("date_to") || "";
-    const ordering = searchParams.get("ordering") || "-created_at";
 
-    let leads = leadsDB.getAll();
+    const filter: Record<string, any> = {};
 
-    // Calculate Summary Stats BEFORE filtering
+    if (search) {
+      filter.$or = [
+        { fullName: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+        { phone: { $regex: search, $options: "i" } },
+        { companyName: { $regex: search, $options: "i" } },
+        { message: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (status) {
+      filter.status = status;
+    }
+
+    if (source) {
+      filter.source = { $regex: `^${source}$`, $options: "i" };
+    }
+
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) filter.createdAt.$lte = new Date(dateTo);
+    }
+
+    const totalCount = await LeadModel.countDocuments(filter);
+    const totalAll = await LeadModel.countDocuments({});
+    const newCount = await LeadModel.countDocuments({ status: "new" });
+    const contactedCount = await LeadModel.countDocuments({ status: "contacted" });
+    const qualifiedCount = await LeadModel.countDocuments({ status: "qualified" });
+    const convertedCount = await LeadModel.countDocuments({ status: "converted" });
+    const closedCount = await LeadModel.countDocuments({ status: "closed" });
+    const spamCount = await LeadModel.countDocuments({ status: "spam" });
+
     const stats = {
-      total: leads.length,
-      newCount: leads.filter(l => l.status === "new").length,
-      contactedCount: leads.filter(l => l.status === "contacted").length,
-      qualifiedCount: leads.filter(l => l.status === "qualified").length,
-      convertedCount: leads.filter(l => l.status === "converted").length,
-      closedCount: leads.filter(l => l.status === "closed").length,
-      spamCount: leads.filter(l => l.status === "spam").length,
+      total: totalAll,
+      newCount,
+      contactedCount,
+      qualifiedCount,
+      convertedCount,
+      closedCount,
+      spamCount,
     };
 
-    // Filter by search query
-    if (search) {
-      leads = leads.filter(
-        l =>
-          l.full_name.toLowerCase().includes(search) ||
-          l.email.toLowerCase().includes(search) ||
-          l.phone.toLowerCase().includes(search) ||
-          l.company_name.toLowerCase().includes(search) ||
-          l.message.toLowerCase().includes(search)
-      );
-    }
+    const leadsDocs = await LeadModel.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize);
 
-    // Filter by status
-    if (status) {
-      leads = leads.filter(l => l.status === status);
-    }
-
-    // Filter by source
-    if (source) {
-      leads = leads.filter(l => l.source.toLowerCase() === source.toLowerCase());
-    }
-
-    // Filter by assigned staff
-    if (assignedTo) {
-      leads = leads.filter(l => l.assigned_to === assignedTo);
-    }
-
-    // Filter by date range
-    if (dateFrom) {
-      const fromTime = new Date(dateFrom).getTime();
-      leads = leads.filter(l => new Date(l.created_at).getTime() >= fromTime);
-    }
-    if (dateTo) {
-      const toTime = new Date(dateTo).getTime();
-      leads = leads.filter(l => new Date(l.created_at).getTime() <= toTime);
-    }
-
-    // Sort/ordering
-    leads.sort((a, b) => {
-      let isDesc = ordering.startsWith("-");
-      let key = isDesc ? ordering.substring(1) : ordering;
-
-      let valA = (a as any)[key] || "";
-      let valB = (b as any)[key] || "";
-
-      if (key === "created_at" || key === "updated_at") {
-        const timeA = new Date(valA).getTime();
-        const timeB = new Date(valB).getTime();
-        return isDesc ? timeB - timeA : timeA - timeB;
-      }
-
-      if (typeof valA === "string") {
-        return isDesc ? valB.localeCompare(valA) : valA.localeCompare(valB);
-      }
-
-      return isDesc ? valB - valA : valA - valB;
-    });
-
-    // Pagination
-    const totalCount = leads.length;
-    const startIndex = (page - 1) * pageSize;
-    const paginatedLeads = leads.slice(startIndex, startIndex + pageSize);
+    const leads = leadsDocs.map((doc) => ({
+      id: String(doc._id),
+      full_name: doc.fullName || "",
+      email: doc.email || "",
+      phone: doc.phone || "",
+      whatsapp_number: doc.whatsappNumber || "",
+      company_name: doc.companyName || "",
+      location: doc.location || "",
+      service_interested: doc.serviceInterested || "",
+      message: doc.message || "",
+      preferred_contact_method: doc.preferredContactMethod || "",
+      form_data: doc.formData || {},
+      status: doc.status || "new",
+      source: doc.source || "website",
+      page_url: doc.pageUrl || "",
+      ip_address: doc.ipAddress || "",
+      user_agent: doc.userAgent || "",
+      admin_notes: doc.adminNotes || "",
+      assigned_to: "",
+      created_at: doc.createdAt ? doc.createdAt.toISOString() : "",
+      updated_at: doc.updatedAt ? doc.updatedAt.toISOString() : "",
+    }));
 
     return NextResponse.json({
       success: true,
       data: {
-        leads: paginatedLeads,
+        leads,
         pagination: {
           total: totalCount,
           page,
           page_size: pageSize,
           total_pages: Math.ceil(totalCount / pageSize),
         },
-        stats
-      }
+        stats,
+      },
     });
-
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to fetch leads" }, { status: 500 });
+    console.error("[Admin Leads GET API] Error:", error);
+    return NextResponse.json({ error: "Failed to fetch leads from database" }, { status: 500 });
   }
 }

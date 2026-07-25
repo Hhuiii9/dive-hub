@@ -1,88 +1,75 @@
 import { NextRequest, NextResponse } from "next/server";
-import { usersDB, resetTokensDB, sessionsDB, hashPassword } from "@/lib/db";
-
-// Helper to check password strength
-function isPasswordStrong(password: string): boolean {
-  if (password.length < 8) return false;
-  const hasUpperCase = /[A-Z]/.test(password);
-  const hasLowerCase = /[a-z]/.test(password);
-  const hasNumbers = /\d/.test(password);
-  const hasNonalphas = /\W/.test(password);
-  return hasUpperCase && hasLowerCase && hasNumbers && hasNonalphas;
-}
+import crypto from "crypto";
+import { connectDatabase } from "@/lib/mongodb";
+import UserModel from "@/lib/models/User";
+import PasswordResetTokenModel from "@/lib/models/PasswordResetToken";
+import SessionModel from "@/lib/models/Session";
+import { hashPassword } from "@/lib/seed";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { token, password, password_confirmation } = body;
+    const token = body.token;
+    const newPassword = body.newPassword || body.password;
 
-    if (!token || !password || !password_confirmation) {
+    if (!token || !newPassword) {
       return NextResponse.json(
-        { success: false, message: "Token, password, and password confirmation are required." },
+        { success: false, message: "Token and new password are required." },
         { status: 400 }
       );
     }
 
-    if (password !== password_confirmation) {
+    if (String(newPassword).length < 6) {
       return NextResponse.json(
-        { success: false, message: "Passwords do not match." },
+        { success: false, message: "Password must be at least 6 characters long." },
         { status: 400 }
       );
     }
 
-    if (!isPasswordStrong(password)) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character." 
-        },
-        { status: 400 }
-      );
-    }
+    await connectDatabase();
 
-    // Retrieve reset token
-    const reset = resetTokensDB.getByToken(token);
-    if (!reset || reset.used || new Date(reset.expires_at).getTime() < Date.now()) {
-      return NextResponse.json(
-        { success: false, message: "Invalid, expired, or already used reset token." },
-        { status: 400 }
-      );
-    }
-
-    // Retrieve user
-    const user = usersDB.getByEmail(reset.email);
-    if (!user || !user.is_active) {
-      return NextResponse.json(
-        { success: false, message: "User account is no longer active." },
-        { status: 400 }
-      );
-    }
-
-    // Update password
-    const newHash = hashPassword(password);
-    usersDB.update(user.id, {
-      password_hash: newHash
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const resetRecord = await PasswordResetTokenModel.findOne({
+      tokenHash,
+      usedAt: null,
+      expiresAt: { $gt: new Date() },
     });
 
-    // Mark reset token as used
-    resetTokensDB.use(token);
+    if (!resetRecord) {
+      return NextResponse.json(
+        { success: false, message: "Invalid or expired reset token." },
+        { status: 400 }
+      );
+    }
 
-    // Invalidate all previous sessions/tokens for this user
-    const allSessions = sessionsDB.getAll();
-    const cleanSessions = allSessions.filter(s => s.user_id !== user.id);
-    // Write them back to sessions DB
-    const fs = require("fs");
-    const path = require("path");
-    fs.writeFileSync(path.join(process.cwd(), "data", "sessions.json"), JSON.stringify(cleanSessions, null, 2), "utf8");
+    const user = await UserModel.findById(resetRecord.userId);
+    if (!user || !user.isActive) {
+      return NextResponse.json(
+        { success: false, message: "User account not found or inactive." },
+        { status: 400 }
+      );
+    }
+
+    // Update password hash
+    user.passwordHash = hashPassword(newPassword);
+    user.passwordChangedAt = new Date();
+    await user.save();
+
+    // Mark token as used
+    resetRecord.usedAt = new Date();
+    await resetRecord.save();
+
+    // Invalidate existing sessions
+    await SessionModel.deleteMany({ userId: user._id });
 
     return NextResponse.json({
       success: true,
-      message: "Password reset successful. Please log in with your new password."
+      message: "Password reset successful. Please log in with your new password.",
     });
   } catch (error: any) {
-    console.error("Reset password API error:", error);
+    console.error("[Reset Password API] Error:", error);
     return NextResponse.json(
-      { success: false, message: "An unexpected error occurred." },
+      { success: false, message: "An unexpected error occurred during password reset." },
       { status: 500 }
     );
   }

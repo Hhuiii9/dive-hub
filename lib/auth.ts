@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { sessionsDB, usersDB, User } from "./db";
+import { connectDatabase } from "./mongodb";
+import UserModel, { IUser } from "./models/User";
+import SessionModel from "./models/Session";
 
-// Role permission mapping
 export const ROLE_PERMISSIONS: Record<string, string[]> = {
   super_admin: [
     "view_leads",
@@ -10,85 +11,63 @@ export const ROLE_PERMISSIONS: Record<string, string[]> = {
     "send_lead_email",
     "delete_leads",
     "export_leads",
-    "manage_users"
+    "manage_users",
   ],
-  admin: [
-    "view_leads",
-    "manage_leads",
-    "manage_lead_settings",
-    "send_lead_email",
-    "export_leads"
-  ],
-  staff: [
-    "view_leads",
-    "manage_leads", // only for assigned leads (checked at API level)
-    "send_lead_email" // when enabled
-  ]
 };
 
-// Check if token/session is authenticated and return boolean
-export function isAdminAuthenticated(request: NextRequest): boolean {
+export async function getAuthenticatedUser(request: NextRequest): Promise<IUser | null> {
   try {
-    const user = getAuthenticatedUser(request);
-    return !!user && (user.role === "super_admin" || user.role === "admin" || user.role === "staff");
-  } catch {
-    return false;
+    let token = "";
+
+    const authHeader = request.headers.get("Authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.substring(7);
+    }
+
+    if (!token) {
+      const url = new URL(request.url);
+      token = url.searchParams.get("token") || "";
+    }
+
+    if (!token) {
+      token = request.cookies.get("admin_token")?.value || "";
+    }
+
+    if (!token) {
+      return null;
+    }
+
+    await connectDatabase();
+
+    const session = await SessionModel.findOne({ token });
+    if (!session) {
+      return null;
+    }
+
+    if (new Date(session.expiresAt).getTime() < Date.now()) {
+      await SessionModel.deleteOne({ token });
+      return null;
+    }
+
+    const user = await UserModel.findById(session.userId);
+    if (!user || !user.isActive || user.role !== "super_admin") {
+      return null;
+    }
+
+    return user;
+  } catch (error) {
+    console.error("[Auth] Authentication check error:", error);
+    return null;
   }
 }
 
-// Get the actual authenticated user object
-export function getAuthenticatedUser(request: NextRequest): User | null {
-  // Check authorization header
-  const authHeader = request.headers.get("Authorization");
-  let token = "";
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    token = authHeader.substring(7);
-  }
-
-  // Check query parameter
-  if (!token) {
-    const url = new URL(request.url);
-    token = url.searchParams.get("token") || "";
-  }
-
-  // Check cookie
-  if (!token) {
-    token = request.cookies.get("admin_token")?.value || "";
-  }
-
-  if (!token) {
-    return null;
-  }
-
-  // Support legacy mock admin token
-  if (token === "mock-admin-token") {
-    // Return a default super admin for backward compatibility / testing
-    const defaultAdmin = usersDB.getByEmail("admin@example.com");
-    return defaultAdmin || null;
-  }
-
-  const session = sessionsDB.getByToken(token);
-  if (!session) {
-    return null;
-  }
-
-  // Check expiration
-  if (new Date(session.expires_at).getTime() < Date.now()) {
-    // Expired
-    sessionsDB.deleteByToken(token);
-    return null;
-  }
-
-  const user = usersDB.getById(session.user_id);
-  if (!user || !user.is_active) {
-    return null;
-  }
-
-  return user;
+export async function isAdminAuthenticated(request: NextRequest): Promise<boolean> {
+  const user = await getAuthenticatedUser(request);
+  return !!user && user.role === "super_admin";
 }
 
-// Check if user has specific permission
-export function hasPermission(user: User, permission: string): boolean {
-  const permissions = ROLE_PERMISSIONS[user.role] || [];
+export function hasPermission(user: IUser, permission: string): boolean {
+  if (user.role !== "super_admin") return false;
+  const permissions = ROLE_PERMISSIONS["super_admin"] || [];
   return permissions.includes(permission);
 }
